@@ -6,6 +6,7 @@ use anyhow::Result;
 use copypasta::{ClipboardContext, ClipboardProvider};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::{Arc, Mutex};
+use ureq::http;
 
 macro_rules! delegate_to_locked_inner {
     ($(($fn_name:ident, $t:ty)),* $(,)? ) => {
@@ -355,6 +356,33 @@ impl AppImpl {
         };
     }
 
+    fn get_selected_entry_content_from_link(&self) -> Option<Result<String>> {
+        if let Some(selected_idx) = self.entries.state.selected() {
+            if let Some(ref item) = self.entries.items.get(selected_idx) {
+                item.link.as_ref().map(|link| {
+                    let request = self.http_client.get(link);
+                    let mut response = request.call()?;
+                    match response.status() {
+                        http::StatusCode::OK => {
+                            let response_str = response.body_mut().read_to_string()?;
+                            Ok(html2text::from_read(
+                                response_str.as_bytes(),
+                                response_str.len(),
+                            )?)
+                        }
+                        _ => Err(anyhow::anyhow!(
+                            "received unexpected status code fetching feed {response:?}"
+                        )),
+                    }
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     fn get_selected_entry_content(&self) -> Option<Result<crate::rss::EntryContent>> {
         self.entries.state.selected().and_then(|selected_idx| {
             self.entries
@@ -413,7 +441,9 @@ impl AppImpl {
         if let Some(entry_meta) = &self.current_entry_meta {
             let entry_meta = entry_meta.clone();
 
-            if let Some(entry) = self.get_selected_entry_content() {
+            if let Some(Ok(content)) = self.get_selected_entry_content_from_link() {
+                self.current_entry_text = content;
+            } else if let Some(entry) = self.get_selected_entry_content() {
                 let entry = entry?;
                 let empty_string = String::from("No content or description tag provided.");
 

@@ -28,7 +28,6 @@ r2d2_sqlite = "0.26"
 rss = { version = "2.0", default-features = false }
 rusqlite = { version = "0.33", features = ["bundled", "chrono"] }
 ratatui = "0.29"
-ureq = { version = "3", features = ["socks-proxy", "charset"] }
 webbrowser = "1"
 wsl = "0.1"
 article_scraper = "2.1.1"
@@ -36,6 +35,7 @@ reqwest = "0.12.12"
 tokio = {version = "1.43.0", features=["full"]}
 url = "2.5.4"
 termimad = "0.31.2"
+http = "1.2.0"
 
 [profile.release]
 codegen-units = 1

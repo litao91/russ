@@ -3,7 +3,7 @@
 use crate::ImportOptions;
 use anyhow::{Context, Result};
 
-pub(crate) fn import(options: ImportOptions) -> Result<()> {
+pub(crate) async fn import(options: ImportOptions) -> Result<()> {
     let mut conn = rusqlite::Connection::open(options.database_path)?;
 
     crate::rss::initialize_db(&mut conn)?;
@@ -16,11 +16,9 @@ pub(crate) fn import(options: ImportOptions) -> Result<()> {
     let opml_document =
         opml::OPML::from_reader(&mut opml_reader).context("unable to parse provided OPML file")?;
 
-    let http_client = ureq::Agent::config_builder()
-        .timeout_global(Some(options.network_timeout))
-        .proxy(ureq::Proxy::try_from_env())
-        .build()
-        .into();
+    let http_client = reqwest::ClientBuilder::new()
+        .read_timeout(options.network_timeout)
+        .build()?;
 
     let feed_urls = get_feed_urls(&opml_document);
 
@@ -30,7 +28,7 @@ pub(crate) fn import(options: ImportOptions) -> Result<()> {
     for feed_url in feed_urls {
         eprintln!(">>>>>>>>>>");
         eprintln!("{}: starting import", feed_url);
-        match crate::rss::subscribe_to_feed(&http_client, &mut conn, &feed_url) {
+        match crate::rss::subscribe_to_feed(&http_client, &mut conn, &feed_url).await {
             Ok(_feed_id) => {
                 eprintln!("{feed_url}: OK");
                 successful_imports += 1;

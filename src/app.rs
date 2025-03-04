@@ -7,7 +7,7 @@ use article_scraper::ArticleScraper;
 use copypasta::{ClipboardContext, ClipboardProvider};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::{Arc, Mutex};
-use ureq::http;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 macro_rules! delegate_to_locked_inner {
     ($(($fn_name:ident, $t:ty)),* $(,)? ) => {
@@ -31,6 +31,17 @@ macro_rules! delegate_to_locked_mut_inner {
     };
 }
 
+macro_rules! delegate_to_locked_mut_inner_async {
+    ($(($fn_name:ident, $t:ty)),* $(,)?) => {
+        $(
+            pub async fn $fn_name(&self) -> $t {
+                let mut inner = self.inner.lock().unwrap();
+                inner.$fn_name().await
+            }
+        )*
+    };
+}
+
 #[derive(Clone, Debug)]
 pub struct App {
     inner: Arc<Mutex<AppImpl>>,
@@ -41,7 +52,7 @@ impl App {
         (error_flash_is_empty, bool),
         (feed_ids, Result<Vec<crate::rss::FeedId>>),
         (force_redraw, Result<()>),
-        (http_client, ureq::Agent),
+        (http_client, reqwest::Client),
         (mode, Mode),
         (selected, Selected),
         (open_link_in_browser, Result<()>),
@@ -70,13 +81,14 @@ impl App {
         (toggle_read_mode, Result<()>),
         (update_current_feed_and_entries, Result<()>),
         (select_and_show_current_entry, Result<()>),
-        (scrape_article, Result<()>)
     ];
+
+    delegate_to_locked_mut_inner_async![(scrape_article, Result<()>)];
 
     pub fn new(
         options: crate::ReadOptions,
-        event_tx: std::sync::mpsc::Sender<crate::Event<crossterm::event::KeyEvent>>,
-        io_tx: std::sync::mpsc::Sender<crate::io::Action>,
+        event_tx: UnboundedSender<crate::Event<crossterm::event::KeyEvent>>,
+        io_tx: UnboundedSender<crate::io::Action>,
     ) -> Result<App> {
         Ok(App {
             inner: Arc::new(Mutex::new(AppImpl::new(options, event_tx, io_tx)?)),
@@ -173,7 +185,7 @@ pub struct AppImpl {
     // database stuff
     pub conn: rusqlite::Connection,
     // network stuff
-    pub http_client: ureq::Agent,
+    pub http_client: reqwest::Client,
     // feed stuff
     pub current_feed: Option<crate::rss::Feed>,
     pub feeds: util::StatefulList<crate::rss::Feed>,
@@ -196,25 +208,24 @@ pub struct AppImpl {
     pub error_flash: Vec<anyhow::Error>,
     pub feed_subscription_input: String,
     pub flash: Option<String>,
-    event_tx: std::sync::mpsc::Sender<crate::Event<crossterm::event::KeyEvent>>,
-    io_tx: std::sync::mpsc::Sender<crate::io::Action>,
+    event_tx: UnboundedSender<crate::Event<crossterm::event::KeyEvent>>,
+    io_tx: UnboundedSender<crate::io::Action>,
     pub is_wsl: bool,
 }
 
 impl AppImpl {
     pub fn new(
         options: crate::ReadOptions,
-        event_tx: std::sync::mpsc::Sender<crate::Event<crossterm::event::KeyEvent>>,
-        io_tx: std::sync::mpsc::Sender<crate::io::Action>,
+        event_tx: UnboundedSender<crate::Event<crossterm::event::KeyEvent>>,
+        io_tx: UnboundedSender<crate::io::Action>,
     ) -> Result<AppImpl> {
         let mut conn = rusqlite::Connection::open(&options.database_path)?;
 
-        let http_client = ureq::Agent::config_builder()
-            .timeout_global(Some(options.network_timeout))
-            .proxy(ureq::Proxy::try_from_env())
+        let http_client = reqwest::ClientBuilder::new()
+            .read_timeout(options.network_timeout)
             .user_agent("russ/0.5.0")
-            .build()
-            .into();
+            .build()?;
+
         crate::rss::initialize_db(&mut conn)?;
         let feeds: util::StatefulList<crate::rss::Feed> = vec![].into();
         let entries: util::StatefulList<crate::rss::EntryMetadata> = vec![].into();
@@ -542,7 +553,7 @@ impl AppImpl {
         Ok(())
     }
 
-    pub fn http_client(&self) -> ureq::Agent {
+    pub fn http_client(&self) -> reqwest::Client {
         // this is cheap because it only clones a struct containing two Arcs
         self.http_client.clone()
     }
@@ -622,40 +633,29 @@ impl AppImpl {
         }
     }
 
-    pub fn scrape_article(&mut self) -> Result<()> {
+    pub async fn scrape_article(&mut self) -> Result<()> {
         let link = &self
             .current_entry_meta
             .as_ref()
             .and_then(|entry| entry.link.as_ref());
 
         if let Some(link) = link {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .enable_io()
-                .build()?;
-            let content = rt.block_on(async {
-                let scraper = ArticleScraper::new(None).await;
-                if let Ok(url) = url::Url::parse(link.as_ref()) {
-                    let client = reqwest::Client::new();
-                    if let Ok(article) = scraper.parse(&url, false, &client, None).await {
-                        return article.html;
-                    }
+            let scraper = ArticleScraper::new(None).await;
+            if let Ok(url) = url::Url::parse(link.as_ref()) {
+                let client = self.http_client();
+                let article = scraper.parse(&url, false, &client, None).await?;
+                if let Some(content) = article.html {
+                    let line_length = if self.entry_column_width >= 5 {
+                        self.entry_column_width - 4
+                    } else {
+                        1
+                    };
+                    self.current_entry_text =
+                        html2text::from_read(content.as_bytes(), line_length as usize)?;
+                    self.entry_lines_len = self.current_entry_text.matches('\n').count();
                 }
-                None
-            });
-
-            if let Some(content) = content {
-                let line_length = if self.entry_column_width >= 5 {
-                    self.entry_column_width - 4
-                } else {
-                    1
-                };
-                self.current_entry_text =
-                    html2text::from_read(content.as_bytes(), line_length as usize)?;
-                self.entry_lines_len = self.current_entry_text.matches('\n').count();
             }
         }
-
         Ok(())
     }
 

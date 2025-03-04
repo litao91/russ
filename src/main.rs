@@ -10,12 +10,14 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::{thread, time};
+use std::time;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 mod app;
 mod io;
@@ -30,14 +32,14 @@ fn main() -> Result<()> {
 
     let validated_options = options.subcommand.validate()?;
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     match validated_options {
-        ValidatedOptions::Import(options) => crate::opml::import(options),
-        ValidatedOptions::Read(options) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?;
-            rt.block_on(async move { run_reader(options).await })
+        ValidatedOptions::Import(options) => {
+            rt.block_on(async move { crate::opml::import(options).await })
         }
+        ValidatedOptions::Read(options) => rt.block_on(async move { run_reader(options).await }),
     }
 }
 
@@ -184,13 +186,13 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     terminal.hide_cursor()?;
 
     // Setup input handling
-    let (event_tx, event_rx) = mpsc::channel();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
     let event_tx_clone = event_tx.clone();
 
     let tick_rate = time::Duration::from_millis(options.tick_rate);
 
-    thread::spawn(move || {
+    tokio::spawn(async move {
         let mut last_tick = time::Instant::now();
         loop {
             // poll for tick rate duration, if no events, sent tick event.
@@ -212,7 +214,7 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
 
     let options_clone = options.clone();
 
-    let (io_tx, io_rx) = mpsc::channel();
+    let (io_tx, io_rx) = mpsc::unbounded_channel();
 
     let io_tx_clone = io_tx.clone();
 
@@ -223,9 +225,10 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     terminal.clear()?;
 
     // spawn this thread to handle receiving messages to performing blocking network and db IO
-    let io_thread = thread::spawn(move || -> Result<()> {
-        io::io_loop(cloned_app, io_tx_clone, io_rx, &options_clone)
-    });
+    let io_thread =
+        tokio::spawn(
+            async move { io::io_loop(cloned_app, io_tx_clone, io_rx, &options_clone).await },
+        );
 
     // this is basically "the Elm Architecture".
     //
@@ -236,12 +239,12 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     loop {
         app.draw(&mut terminal)?;
 
-        let event = event_rx.recv()?;
+        let event = event_rx.recv().await.unwrap();
 
         let action = get_action(&app, event);
 
         if let Some(action) = action {
-            update(&mut app, action)?;
+            update(&mut app, action).await?;
         }
 
         if app.should_quit() {
@@ -254,7 +257,7 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     }
 
     io_thread
-        .join()
+        .await
         .expect("Unable to join IO thread to main thread")?;
 
     Ok(())
@@ -363,7 +366,7 @@ fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
     }
 }
 
-fn update(app: &mut App, action: Action) -> Result<()> {
+async fn update(app: &mut App, action: Action) -> Result<()> {
     match action {
         Action::Tick => (),
         Action::Quit => app.set_should_quit(true),
@@ -381,7 +384,7 @@ fn update(app: &mut App, action: Action) -> Result<()> {
         Action::EnterEditingMode => app.set_mode(Mode::Editing),
         Action::CopyLinkToClipboard => app.put_current_link_in_clipboard()?,
         Action::OpenLinkInBrowser => app.open_link_in_browser()?,
-        Action::ScrapeArticle => app.scrape_article()?,
+        Action::ScrapeArticle => app.scrape_article().await?,
         Action::SubscribeToFeed => app.subscribe_to_feed()?,
         Action::PushInputChar(c) => app.push_feed_subscription_input(c),
         Action::DeleteInputChar => app.pop_feed_subscription_input(),

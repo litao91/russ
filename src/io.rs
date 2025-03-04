@@ -4,6 +4,7 @@ use crate::app::App;
 use crate::modes::Mode;
 use crate::ReadOptions;
 use anyhow::Result;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub(crate) enum Action {
     Break,
@@ -14,16 +15,16 @@ pub(crate) enum Action {
 }
 
 /// A loop to process `io::Action` messages.
-pub(crate) fn io_loop(
+pub(crate) async fn io_loop(
     app: App,
-    io_tx: std::sync::mpsc::Sender<Action>,
-    io_rx: std::sync::mpsc::Receiver<Action>,
+    io_tx: UnboundedSender<Action>,
+    mut io_rx: UnboundedReceiver<Action>,
     options: &ReadOptions,
 ) -> Result<()> {
     let manager = r2d2_sqlite::SqliteConnectionManager::file(&options.database_path);
     let connection_pool = r2d2::Pool::new(manager)?;
 
-    while let Ok(event) = io_rx.recv() {
+    while let Some(event) = io_rx.recv().await {
         match event {
             Action::Break => break,
             Action::RefreshFeed(feed_id) => {
@@ -36,7 +37,8 @@ pub(crate) fn io_loop(
                     if let Err(e) = fetch_result {
                         app.push_error_flash(e)
                     }
-                })?;
+                })
+                .await?;
 
                 app.update_current_feed_and_entries()?;
                 let elapsed = now.elapsed();
@@ -58,7 +60,8 @@ pub(crate) fn io_loop(
                         Ok(_) => successfully_refreshed_len += 1,
                         Err(e) => app.push_error_flash(e),
                     }
-                })?;
+                })
+                .await?;
 
                 {
                     app.update_current_feed_and_entries()?;
@@ -83,7 +86,8 @@ pub(crate) fn io_loop(
                     &app.http_client(),
                     &mut conn,
                     &feed_subscription_input,
-                );
+                )
+                .await;
 
                 if let Err(e) = r {
                     app.push_error_flash(e);
@@ -124,7 +128,7 @@ pub(crate) fn io_loop(
 /// chunks based on the number of available CPUs.
 /// Each chunk is then passed to its own thread,
 /// where each feed_id in the chunk has its feed refreshed synchronously on that thread.
-fn refresh_feeds<F>(
+async fn refresh_feeds<F>(
     app: &App,
     connection_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     feed_ids: &[crate::rss::FeedId],
@@ -141,13 +145,13 @@ where
             let http_client = app.http_client();
             let chunk = chunk.to_owned();
 
-            std::thread::spawn(move || -> Result<Vec<Result<(), anyhow::Error>>> {
+            tokio::spawn(async move {
                 let mut conn = pool_get_result?;
 
-                let results = chunk
-                    .into_iter()
-                    .map(|feed_id| crate::rss::refresh_feed(&http_client, &mut conn, feed_id))
-                    .collect();
+                let mut results = Vec::new();
+                for feed_id in chunk {
+                    results.push(crate::rss::refresh_feed(&http_client, &mut conn, feed_id).await);
+                }
 
                 Ok::<Vec<Result<(), anyhow::Error>>, anyhow::Error>(results)
             })
@@ -156,7 +160,7 @@ where
 
     for join_handle in join_handles {
         let chunk_results = join_handle
-            .join()
+            .await
             .expect("unable to join worker thread to io thread");
         for chunk_result in chunk_results? {
             refresh_result_handler(app, chunk_result)
@@ -188,9 +192,9 @@ fn chunkify_for_threads<T>(
 }
 
 /// clear the flash after a given duration
-fn clear_flash_after(tx: std::sync::mpsc::Sender<Action>, duration: std::time::Duration) {
-    std::thread::spawn(move || {
-        std::thread::sleep(duration);
+fn clear_flash_after(tx: UnboundedSender<Action>, duration: std::time::Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
         tx.send(Action::ClearFlash)
             .expect("Unable to send IOCommand::ClearFlash");
     });

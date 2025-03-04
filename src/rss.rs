@@ -12,7 +12,6 @@ use rusqlite::types::{FromSql, ToSqlOutput};
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::str::FromStr;
-use ureq::http;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EntryId(i64);
@@ -322,12 +321,12 @@ impl FromStr for FeedAndEntries {
     }
 }
 
-pub fn subscribe_to_feed(
-    http_client: &ureq::Agent,
+pub async fn subscribe_to_feed(
+    http_client: &reqwest::Client,
     conn: &mut rusqlite::Connection,
     url: &str,
 ) -> Result<FeedId> {
-    let feed_and_entries = fetch_feed(http_client, url, None)?;
+    let feed_and_entries = fetch_feed(http_client, url, None).await?;
 
     match feed_and_entries {
         FeedResponse::CacheMiss(feed_and_entries) => {
@@ -366,8 +365,8 @@ enum FeedResponse {
     CacheHit,
 }
 
-fn fetch_feed(
-    http_client: &ureq::Agent,
+async fn fetch_feed(
+    http_client: &reqwest::Client,
     url: &str,
     current_etag: Option<String>,
 ) -> Result<FeedResponse> {
@@ -379,11 +378,11 @@ fn fetch_feed(
         request
     };
 
-    let mut response = request.call()?;
+    let response = request.send().await?;
 
     match response.status() {
         // the etags did not match, it is a new feed file
-        http::StatusCode::OK => {
+        http::status::StatusCode::OK => {
             let etag_header = response
                 .headers()
                 .iter()
@@ -394,7 +393,7 @@ fn fetch_feed(
                 Err(_) => None,
             });
 
-            let content: String = response.body_mut().read_to_string()?;
+            let content: String = response.text().await?;
 
             let mut feed_and_entries = FeedAndEntries::from_str(&content)?;
 
@@ -415,8 +414,8 @@ fn fetch_feed(
 /// fetches the feed and stores the new entries
 /// uses the link as the uniqueness key.
 /// TODO hash the content to see if anything changed, and update that way.
-pub fn refresh_feed(
-    client: &ureq::Agent,
+pub async fn refresh_feed(
+    client: &reqwest::Client,
     conn: &mut rusqlite::Connection,
     feed_id: FeedId,
 ) -> Result<()> {
@@ -428,6 +427,7 @@ pub fn refresh_feed(
     })?;
 
     let remote_feed = fetch_feed(client, &feed_url, current_etag)
+        .await
         .with_context(|| format!("Failed to fetch feed {feed_url}"))?;
 
     if let FeedResponse::CacheMiss(remote_feed) = remote_feed {
@@ -847,13 +847,13 @@ mod tests {
     use super::*;
     const ZCT: &str = "https://zeroclarkthirty.com/feed";
 
-    #[test]
-    fn it_fetches() {
-        let http_client = ureq::Agent::config_builder()
-            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn it_fetches() {
+        let http_client = reqwest::ClientBuilder::new()
+            .timeout(std::time::Duration::from_secs(5))
             .build()
-            .into();
-        let feed_and_entries = fetch_feed(&http_client, ZCT, None).unwrap();
+            .unwrap();
+        let feed_and_entries = fetch_feed(&http_client, ZCT, None).await.unwrap();
         if let FeedResponse::CacheMiss(feed_and_entries) = feed_and_entries {
             assert!(!feed_and_entries.entries.is_empty())
         } else {
@@ -861,15 +861,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn it_subscribes_to_a_feed() {
-        let http_client = ureq::Agent::config_builder()
-            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn it_subscribes_to_a_feed() {
+        let http_client = reqwest::ClientBuilder::new()
+            .timeout(std::time::Duration::from_secs(5))
             .build()
-            .into();
+            .unwrap();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
-        subscribe_to_feed(&http_client, &mut conn, ZCT).unwrap();
+        subscribe_to_feed(&http_client, &mut conn, ZCT)
+            .await
+            .unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
             .unwrap();
@@ -877,18 +879,22 @@ mod tests {
         assert!(count > 50)
     }
 
-    #[test]
-    fn refresh_feed_does_not_add_any_items_if_there_are_no_new_items() {
-        let http_client = ureq::Agent::config_builder()
-            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn refresh_feed_does_not_add_any_items_if_there_are_no_new_items() {
+        let http_client = reqwest::ClientBuilder::new()
+            .timeout(std::time::Duration::from_secs(5))
             .build()
-            .into();
+            .unwrap();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
-        subscribe_to_feed(&http_client, &mut conn, ZCT).unwrap();
+        subscribe_to_feed(&http_client, &mut conn, ZCT)
+            .await
+            .unwrap();
         let feed_id = 1.into();
         let old_entries = get_entries_metas(&conn, &ReadMode::ShowUnread, feed_id).unwrap();
-        refresh_feed(&http_client, &mut conn, feed_id).unwrap();
+        refresh_feed(&http_client, &mut conn, feed_id)
+            .await
+            .unwrap();
         let e = get_entry_meta(&conn, 1.into()).unwrap();
         e.mark_as_read(&conn).unwrap();
         let new_entries = get_entries_metas(&conn, &ReadMode::ShowUnread, feed_id).unwrap();

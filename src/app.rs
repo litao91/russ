@@ -437,7 +437,7 @@ impl AppImpl {
                 };
 
                 if let Some(html) = entry_html {
-                    let text = html2text::from_read(html.as_bytes(), line_length.into());
+                    let text = html2text::from_read(html.as_bytes(), line_length.into())?;
                     self.entry_lines_len = text.matches('\n').count();
                     self.current_entry_text = text;
                 } else {

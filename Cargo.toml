@@ -16,18 +16,18 @@ chrono = { version = "0.4", default-features = false, features = [
 ] }
 clap = { version = "4", features = ["derive"] }
 copypasta = "0.10"
-crossterm = "0.27"
+crossterm = "0.28"
 diligent-date-parser = "0.1"
-directories = "5"
-html2text = "0.12"
+directories = "6"
+html2text = "0.14"
 html-escape = "0.2.13"
 num_cpus = "1.16"
 opml = "1.1"
 r2d2 = "0.8"
-r2d2_sqlite = "0.24"
+r2d2_sqlite = "0.26"
 rss = { version = "2.0", default-features = false }
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
-ratatui = "0.26"
+rusqlite = { version = "0.33", features = ["bundled", "chrono"] }
+ratatui = "0.29"
 ureq = { version = "3", features = ["socks-proxy", "charset"] }
 webbrowser = "1"
 wsl = "0.1"

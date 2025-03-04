@@ -32,7 +32,12 @@ fn main() -> Result<()> {
 
     match validated_options {
         ValidatedOptions::Import(options) => crate::opml::import(options),
-        ValidatedOptions::Read(options) => run_reader(options),
+        ValidatedOptions::Read(options) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async move { run_reader(options).await })
+        }
     }
 }
 
@@ -167,7 +172,7 @@ pub enum Event<I> {
     Tick,
 }
 
-fn run_reader(options: ReadOptions) -> Result<()> {
+async fn run_reader(options: ReadOptions) -> Result<()> {
     enable_raw_mode()?;
 
     let mut stdout = stdout();

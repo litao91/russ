@@ -651,7 +651,8 @@ impl AppImpl {
                     1
                 };
                 self.current_entry_text =
-                    html2text::from_read(content.as_bytes(), line_length as usize)?
+                    html2text::from_read(content.as_bytes(), line_length as usize)?;
+                self.entry_lines_len = self.current_entry_text.matches('\n').count();
             }
         }
 

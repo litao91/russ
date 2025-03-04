@@ -270,6 +270,7 @@ enum Action {
     EnterEditingMode,
     OpenLinkInBrowser,
     CopyLinkToClipboard,
+    ScrapeArticle,
     Tick,
     SubscribeToFeed,
     PushInputChar(char),
@@ -327,6 +328,7 @@ fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
                     }
                     (KeyCode::Char('c'), _) => Some(Action::CopyLinkToClipboard),
                     (KeyCode::Char('o'), _) => Some(Action::OpenLinkInBrowser),
+                    (KeyCode::Char('s'), _) => Some(Action::ScrapeArticle),
                     _ => None,
                 }
             }
@@ -374,6 +376,7 @@ fn update(app: &mut App, action: Action) -> Result<()> {
         Action::EnterEditingMode => app.set_mode(Mode::Editing),
         Action::CopyLinkToClipboard => app.put_current_link_in_clipboard()?,
         Action::OpenLinkInBrowser => app.open_link_in_browser()?,
+        Action::ScrapeArticle => app.scrape_article()?,
         Action::SubscribeToFeed => app.subscribe_to_feed()?,
         Action::PushInputChar(c) => app.push_feed_subscription_input(c),
         Action::DeleteInputChar => app.pop_feed_subscription_input(),

@@ -12,6 +12,7 @@ use rusqlite::types::{FromSql, ToSqlOutput};
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::str::FromStr;
+use ureq::http;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EntryId(i64);
@@ -373,27 +374,27 @@ fn fetch_feed(
     let request = http_client.get(url);
 
     let request = if let Some(etag) = current_etag {
-        request.set("If-None-Match", &etag)
+        request.header("If-None-Match", &etag)
     } else {
         request
     };
 
-    let response = request.call()?;
+    let mut response = request.call()?;
 
     match response.status() {
         // the etags did not match, it is a new feed file
-        200 => {
-            let header_names = response.headers_names();
-
-            let etag_header_name = header_names
+        http::StatusCode::OK => {
+            let etag_header = response
+                .headers()
                 .iter()
-                .find(|header_name| header_name.to_lowercase() == "etag");
+                .find(|header| header.0.as_str().to_lowercase() == "etag");
 
-            let etag = etag_header_name
-                .and_then(|etag_header| response.header(etag_header))
-                .map(|etag| etag.to_owned());
+            let etag = etag_header.and_then(|etag_kv| match etag_kv.1.to_str() {
+                Ok(str) => Some(str.to_owned()),
+                Err(_) => None,
+            });
 
-            let content = response.into_string()?;
+            let content: String = response.body_mut().read_to_string()?;
 
             let mut feed_and_entries = FeedAndEntries::from_str(&content)?;
 
@@ -404,7 +405,7 @@ fn fetch_feed(
             Ok(FeedResponse::CacheMiss(feed_and_entries))
         }
         // the etags match, it is the same feed we already have
-        304 => Ok(FeedResponse::CacheHit),
+        http::StatusCode::NOT_MODIFIED => Ok(FeedResponse::CacheHit),
         _ => Err(anyhow::anyhow!(
             "received unexpected status code fetching feed {response:?}"
         )),
@@ -848,9 +849,10 @@ mod tests {
 
     #[test]
     fn it_fetches() {
-        let http_client = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_secs(5))
-            .build();
+        let http_client = ureq::Agent::config_builder()
+            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into();
         let feed_and_entries = fetch_feed(&http_client, ZCT, None).unwrap();
         if let FeedResponse::CacheMiss(feed_and_entries) = feed_and_entries {
             assert!(!feed_and_entries.entries.is_empty())
@@ -861,9 +863,10 @@ mod tests {
 
     #[test]
     fn it_subscribes_to_a_feed() {
-        let http_client = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_secs(5))
-            .build();
+        let http_client = ureq::Agent::config_builder()
+            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
         subscribe_to_feed(&http_client, &mut conn, ZCT).unwrap();
@@ -876,9 +879,10 @@ mod tests {
 
     #[test]
     fn refresh_feed_does_not_add_any_items_if_there_are_no_new_items() {
-        let http_client = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_secs(5))
-            .build();
+        let http_client = ureq::Agent::config_builder()
+            .timeout_recv_body(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
         subscribe_to_feed(&http_client, &mut conn, ZCT).unwrap();

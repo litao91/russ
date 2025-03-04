@@ -206,11 +206,12 @@ impl AppImpl {
     ) -> Result<AppImpl> {
         let mut conn = rusqlite::Connection::open(&options.database_path)?;
 
-        let http_client = ureq::AgentBuilder::new()
-            .timeout_read(options.network_timeout)
+        let http_client = ureq::Agent::config_builder()
+            .timeout_global(Some(options.network_timeout))
+            .proxy(ureq::Proxy::try_from_env())
             .user_agent("russ/0.5.0")
-            .build();
-
+            .build()
+            .into();
         crate::rss::initialize_db(&mut conn)?;
         let feeds: util::StatefulList<crate::rss::Feed> = vec![].into();
         let entries: util::StatefulList<crate::rss::EntryMetadata> = vec![].into();

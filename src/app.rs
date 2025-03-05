@@ -6,14 +6,14 @@ use anyhow::Result;
 use article_scraper::ArticleScraper;
 use copypasta::{ClipboardContext, ClipboardProvider};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 
 macro_rules! delegate_to_locked_inner {
     ($(($fn_name:ident, $t:ty)),* $(,)? ) => {
         $(
-            pub fn $fn_name(&self) -> $t {
-                let inner = self.inner.lock().unwrap();
+            pub async fn $fn_name(&self) -> $t {
+                let inner = self.inner.lock().await;
                 inner.$fn_name()
             }
         )*
@@ -23,20 +23,9 @@ macro_rules! delegate_to_locked_inner {
 macro_rules! delegate_to_locked_mut_inner {
     ($(($fn_name:ident, $t:ty)),* $(,)?) => {
         $(
-            pub fn $fn_name(&self) -> $t {
-                let mut inner = self.inner.lock().unwrap();
-                inner.$fn_name()
-            }
-        )*
-    };
-}
-
-macro_rules! delegate_to_locked_mut_inner_async {
-    ($(($fn_name:ident, $t:ty)),* $(,)?) => {
-        $(
             pub async fn $fn_name(&self) -> $t {
-                let mut inner = self.inner.lock().unwrap();
-                inner.$fn_name().await
+                let mut inner = self.inner.lock().await;
+                inner.$fn_name()
             }
         )*
     };
@@ -44,7 +33,7 @@ macro_rules! delegate_to_locked_mut_inner_async {
 
 #[derive(Clone, Debug)]
 pub struct App {
-    inner: Arc<Mutex<AppImpl>>,
+    inner: Arc<tokio::sync::Mutex<AppImpl>>,
 }
 
 impl App {
@@ -83,7 +72,15 @@ impl App {
         (select_and_show_current_entry, Result<()>),
     ];
 
-    delegate_to_locked_mut_inner_async![(scrape_article, Result<()>)];
+    // delegate_to_locked_mut_inner_async![(scrape_article, Result<()>)];
+    pub async fn scrape_article(&self) -> Result<()> {
+        let inner = self.inner.clone();
+        tokio::spawn(async move {
+            let mut inner = inner.lock().await;
+            inner.scrape_article().await;
+        });
+        Ok(())
+    }
 
     pub fn new(
         options: crate::ReadOptions,
@@ -91,12 +88,17 @@ impl App {
         io_tx: UnboundedSender<crate::io::Action>,
     ) -> Result<App> {
         Ok(App {
-            inner: Arc::new(Mutex::new(AppImpl::new(options, event_tx, io_tx)?)),
+            inner: Arc::new(tokio::sync::Mutex::new(AppImpl::new(
+                options, event_tx, io_tx,
+            )?)),
         })
     }
 
-    pub fn draw(&self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn draw(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let mut inner = self.inner.lock().await;
 
         terminal.draw(|f| {
             let chunks = crate::ui::predraw(f);
@@ -123,53 +125,53 @@ impl App {
         Ok(())
     }
 
-    pub fn set_should_quit(&mut self, should_quit: bool) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn set_should_quit(&mut self, should_quit: bool) {
+        let mut inner = self.inner.lock().await;
         inner.should_quit = should_quit
     }
 
-    pub fn set_flash(&self, flash: String) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn set_flash(&self, flash: String) {
+        let mut inner = self.inner.lock().await;
         inner.flash = Some(flash)
     }
 
-    pub fn push_error_flash(&self, e: anyhow::Error) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn push_error_flash(&self, e: anyhow::Error) {
+        let mut inner = self.inner.lock().await;
         inner.error_flash.push(e);
     }
 
-    pub fn set_mode(&self, mode: Mode) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn set_mode(&self, mode: Mode) {
+        let mut inner = self.inner.lock().await;
         inner.mode = mode;
     }
 
-    pub fn push_feed_subscription_input(&self, input: char) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn push_feed_subscription_input(&self, input: char) {
+        let mut inner = self.inner.lock().await;
         inner.feed_subscription_input.push(input);
     }
 
-    pub fn set_feeds(&self, feeds: Vec<crate::rss::Feed>) {
-        let mut inner = self.inner.lock().unwrap();
+    pub async fn set_feeds(&self, feeds: Vec<crate::rss::Feed>) {
+        let mut inner = self.inner.lock().await;
         let feeds = feeds.into();
         inner.feeds = feeds;
     }
 
-    pub(crate) fn refresh_feeds(&self) -> Result<()> {
-        let feed_ids = self.feed_ids()?;
-        let inner = self.inner.lock().unwrap();
+    pub(crate) async fn refresh_feeds(&self) -> Result<()> {
+        let feed_ids = self.feed_ids().await?;
+        let inner = self.inner.lock().await;
         inner
             .io_tx
             .send(crate::io::Action::RefreshFeeds(feed_ids))?;
         Ok(())
     }
 
-    pub(crate) fn has_entries(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+    pub(crate) async fn has_entries(&self) -> bool {
+        let inner = self.inner.lock().await;
         !inner.entries.items.is_empty()
     }
 
-    pub(crate) fn has_current_entry(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+    pub(crate) async fn has_current_entry(&self) -> bool {
+        let inner = self.inner.lock().await;
         inner.current_entry_meta.is_some()
     }
 }

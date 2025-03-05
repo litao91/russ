@@ -208,19 +208,19 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     // new_state <- current_state + action
     let mut tick_interval = tokio::time::interval(tick_rate);
     loop {
-        app.draw(&mut terminal)?;
+        app.draw(&mut terminal).await?;
         tokio::select! {
             _tick = tick_interval.tick() => {
                 event_tx.send(Event::Tick).expect("Unable to send tick");
             },
             Some(event) = event_rx.recv() => {
-                let action = get_action(&app, event);
+                let action = get_action(&app, event).await;
 
                 if let Some(action) = action {
                         update(&mut app, action).await?;
                 }
 
-                if app.should_quit() {
+                if app.should_quit().await {
                     disable_raw_mode()?;
                     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                     terminal.show_cursor()?;
@@ -280,21 +280,21 @@ enum Action {
     ToggleReadStatus,
 }
 
-fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
-    match app.mode() {
+async fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
+    match app.mode().await {
         Mode::Normal => match event {
             Event::Input(key_event) if key_event.kind == KeyEventKind::Press => {
                 match (key_event.code, key_event.modifiers) {
                     (KeyCode::Char('q'), _)
                     | (KeyCode::Char('c'), KeyModifiers::CONTROL)
                     | (KeyCode::Esc, _) => {
-                        if !app.error_flash_is_empty() {
+                        if !app.error_flash_is_empty().await {
                             Some(Action::ClearErrorFlash)
                         } else {
                             Some(Action::Quit)
                         }
                     }
-                    (KeyCode::Char('r'), KeyModifiers::NONE) => match app.selected() {
+                    (KeyCode::Char('r'), KeyModifiers::NONE) => match app.selected().await {
                         Selected::Feeds => Some(Action::RefreshFeed),
                         _ => Some(Action::ToggleReadStatus),
                     },
@@ -309,9 +309,9 @@ fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
                     (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                         Some(Action::PageDown)
                     }
-                    (KeyCode::Enter, _) => match app.selected() {
+                    (KeyCode::Enter, _) => match app.selected().await {
                         Selected::Entries | Selected::Entry(_) => {
-                            if app.has_entries() && app.has_current_entry() {
+                            if app.has_entries().await && app.has_current_entry().await {
                                 Some(Action::SelectAndShowCurrentEntry)
                             } else {
                                 None
@@ -337,7 +337,7 @@ fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
             Event::Input(key_event) if key_event.kind == KeyEventKind::Press => {
                 match key_event.code {
                     KeyCode::Enter => {
-                        if !app.feed_subscription_input_is_empty() {
+                        if !app.feed_subscription_input_is_empty().await {
                             Some(Action::SubscribeToFeed)
                         } else {
                             None
@@ -359,29 +359,29 @@ fn get_action(app: &App, event: Event<KeyEvent>) -> Option<Action> {
 async fn update(app: &mut App, action: Action) -> Result<()> {
     match action {
         Action::Tick => (),
-        Action::Quit => app.set_should_quit(true),
-        Action::RefreshAll => app.refresh_feeds()?,
-        Action::RefreshFeed => app.refresh_feed()?,
-        Action::MoveLeft => app.on_left()?,
-        Action::MoveDown => app.on_down()?,
-        Action::MoveUp => app.on_up()?,
-        Action::MoveRight => app.on_right()?,
-        Action::PageUp => app.page_up(),
-        Action::PageDown => app.page_down(),
-        Action::ToggleHelp => app.toggle_help()?,
-        Action::ToggleReadMode => app.toggle_read_mode()?,
-        Action::ToggleReadStatus => app.toggle_read()?,
-        Action::EnterEditingMode => app.set_mode(Mode::Editing),
-        Action::CopyLinkToClipboard => app.put_current_link_in_clipboard()?,
-        Action::OpenLinkInBrowser => app.open_link_in_browser()?,
+        Action::Quit => app.set_should_quit(true).await,
+        Action::RefreshAll => app.refresh_feeds().await?,
+        Action::RefreshFeed => app.refresh_feed().await?,
+        Action::MoveLeft => app.on_left().await?,
+        Action::MoveDown => app.on_down().await?,
+        Action::MoveUp => app.on_up().await?,
+        Action::MoveRight => app.on_right().await?,
+        Action::PageUp => app.page_up().await,
+        Action::PageDown => app.page_down().await,
+        Action::ToggleHelp => app.toggle_help().await?,
+        Action::ToggleReadMode => app.toggle_read_mode().await?,
+        Action::ToggleReadStatus => app.toggle_read().await?,
+        Action::EnterEditingMode => app.set_mode(Mode::Editing).await,
+        Action::CopyLinkToClipboard => app.put_current_link_in_clipboard().await?,
+        Action::OpenLinkInBrowser => app.open_link_in_browser().await?,
         Action::ScrapeArticle => app.scrape_article().await?,
-        Action::SubscribeToFeed => app.subscribe_to_feed()?,
-        Action::PushInputChar(c) => app.push_feed_subscription_input(c),
-        Action::DeleteInputChar => app.pop_feed_subscription_input(),
-        Action::DeleteFeed => app.delete_feed()?,
-        Action::EnterNormalMode => app.set_mode(Mode::Normal),
-        Action::ClearErrorFlash => app.clear_error_flash(),
-        Action::SelectAndShowCurrentEntry => app.select_and_show_current_entry()?,
+        Action::SubscribeToFeed => app.subscribe_to_feed().await?,
+        Action::PushInputChar(c) => app.push_feed_subscription_input(c).await,
+        Action::DeleteInputChar => app.pop_feed_subscription_input().await,
+        Action::DeleteFeed => app.delete_feed().await?,
+        Action::EnterNormalMode => app.set_mode(Mode::Normal).await,
+        Action::ClearErrorFlash => app.clear_error_flash().await,
+        Action::SelectAndShowCurrentEntry => app.select_and_show_current_entry().await?,
     };
 
     Ok(())

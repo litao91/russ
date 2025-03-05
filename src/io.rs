@@ -37,7 +37,7 @@ pub(crate) async fn io_loop(
                     app.clone(),
                     &connection_pool,
                     &[feed_id],
-                    async |_app, fetch_result| {
+                    async |_app: App, fetch_result| {
                         if let Err(e) = fetch_result {
                             _app.push_error_flash(e).await;
                         }
@@ -65,7 +65,7 @@ pub(crate) async fn io_loop(
                     app.clone(),
                     &connection_pool,
                     &feed_ids,
-                    async |_app, fetch_result| match fetch_result {
+                    async |_app: App, fetch_result| match fetch_result {
                         Ok(_) => successfully_refreshed_len += 1,
                         Err(e) => _app.push_error_flash(e).await,
                     },
@@ -145,7 +145,7 @@ async fn refresh_feeds<F>(
     mut refresh_result_handler: F,
 ) -> Result<()>
 where
-    F: AsyncFnMut(App, anyhow::Result<()>),
+    F: async_fn_traits::AsyncFnMut2<App, anyhow::Result<()>>,
 {
     let chunks = chunkify_for_threads(feed_ids, num_cpus::get() * 2);
 

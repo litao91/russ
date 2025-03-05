@@ -201,7 +201,7 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     let cloned_app = app.clone();
     terminal.clear()?;
     let io_loop_hdl = tokio::spawn(async move {
-        io::io_loop(cloned_app, io_tx_clone, io_rx, &options_clone)
+        io::io_loop(cloned_app, io_tx_clone, io_rx, options_clone)
             .await
             .unwrap();
     });

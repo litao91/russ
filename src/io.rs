@@ -19,7 +19,7 @@ pub(crate) async fn io_loop(
     app: App,
     io_tx: UnboundedSender<Action>,
     mut io_rx: UnboundedReceiver<Action>,
-    options: &ReadOptions,
+    options: ReadOptions,
 ) -> Result<()> {
     let manager = r2d2_sqlite::SqliteConnectionManager::file(&options.database_path);
     let connection_pool = r2d2::Pool::new(manager)?;
@@ -34,12 +34,12 @@ pub(crate) async fn io_loop(
                 app.force_redraw().await?;
 
                 refresh_feeds(
-                    &app,
+                    app.clone(),
                     &connection_pool,
                     &[feed_id],
                     async |_app, fetch_result| {
                         if let Err(e) = fetch_result {
-                            app.push_error_flash(e).await;
+                            _app.push_error_flash(e).await;
                         }
                     },
                 )
@@ -62,12 +62,12 @@ pub(crate) async fn io_loop(
                 let mut successfully_refreshed_len = 0usize;
 
                 refresh_feeds(
-                    &app,
+                    app.clone(),
                     &connection_pool,
                     &feed_ids,
-                    async |app, fetch_result| match fetch_result {
+                    async |_app, fetch_result| match fetch_result {
                         Ok(_) => successfully_refreshed_len += 1,
-                        Err(e) => app.push_error_flash(e).await,
+                        Err(e) => _app.push_error_flash(e).await,
                     },
                 )
                 .await?;
@@ -139,7 +139,7 @@ pub(crate) async fn io_loop(
 /// Each chunk is then passed to its own thread,
 /// where each feed_id in the chunk has its feed refreshed synchronously on that thread.
 async fn refresh_feeds<F>(
-    app: &App,
+    app: App,
     connection_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     feed_ids: &[crate::rss::FeedId],
     mut refresh_result_handler: F,

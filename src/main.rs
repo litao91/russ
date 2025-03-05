@@ -17,7 +17,6 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::time;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 mod app;
 mod io;
@@ -191,44 +190,15 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     let event_tx_clone = event_tx.clone();
 
     let tick_rate = time::Duration::from_millis(options.tick_rate);
-
-    tokio::spawn(async move {
-        let mut last_tick = time::Instant::now();
-        loop {
-            // poll for tick rate duration, if no events, sent tick event.
-            if event::poll(tick_rate - last_tick.elapsed())
-                .expect("Unable to poll for Crossterm event")
-            {
-                if let CEvent::Key(key) = event::read().expect("Unable to read Crossterm event") {
-                    event_tx
-                        .send(Event::Input(key))
-                        .expect("Unable to send Crossterm Key input event");
-                }
-            }
-            if last_tick.elapsed() >= tick_rate {
-                event_tx.send(Event::Tick).expect("Unable to send tick");
-                last_tick = time::Instant::now();
-            }
-        }
-    });
-
     let options_clone = options.clone();
 
-    let (io_tx, io_rx) = mpsc::unbounded_channel();
+    let (io_tx, mut io_rx) = mpsc::unbounded_channel();
 
     let io_tx_clone = io_tx.clone();
 
     let mut app = App::new(options, event_tx_clone, io_tx)?;
 
-    let cloned_app = app.clone();
-
     terminal.clear()?;
-
-    // spawn this thread to handle receiving messages to performing blocking network and db IO
-    let io_thread =
-        tokio::spawn(
-            async move { io::io_loop(cloned_app, io_tx_clone, io_rx, &options_clone).await },
-        );
 
     // this is basically "the Elm Architecture".
     //
@@ -236,29 +206,49 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     // ui <- current_state
     // action <- current_state + event
     // new_state <- current_state + action
+    let mut tick_interval = tokio::time::interval(tick_rate);
     loop {
         app.draw(&mut terminal)?;
+        tokio::select! {
+            _tick = tick_interval.tick() => {
+                event_tx.send(Event::Tick).expect("Unable to send tick");
+            },
+            Some(event) = event_rx.recv() => {
+                let action = get_action(&app, event);
 
-        let event = event_rx.recv().await.unwrap();
+                if let Some(action) = action {
+                        update(&mut app, action).await?;
+                }
 
-        let action = get_action(&app, event);
+                if app.should_quit() {
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                    terminal.show_cursor()?;
+                    break;
+                }
+            },
+            Some(event) = io_rx.recv() => {
+            io::io_loop(&app, &io_tx_clone, &options_clone, event).await?;
+            }
+            Ok(ready) = tokio::task::spawn_blocking(|| crossterm::event::poll(time::Duration::from_millis(100))) => {
+                match ready {
+                    Ok(true) => {
+                        if let CEvent::Key(key) = event::read().expect("Unable to read Crossterm event") {
+                            event_tx
+                                .send(Event::Input(key))
+                                .expect("Unable to send Crossterm Key input event");
+                        }
+                    }
+                    Ok(false) => continue,
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Failed to poll for events: {:?}", e).into());
+                    }
+                }
+            }
 
-        if let Some(action) = action {
-            update(&mut app, action).await?;
-        }
 
-        if app.should_quit() {
-            app.break_io_thread()?;
-            disable_raw_mode()?;
-            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-            terminal.show_cursor()?;
-            break;
         }
     }
-
-    io_thread
-        .await
-        .expect("Unable to join IO thread to main thread")?;
 
     Ok(())
 }

@@ -163,12 +163,6 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn break_io_thread(&self) -> Result<()> {
-        let inner = self.inner.lock().unwrap();
-        inner.io_tx.send(crate::io::Action::Break)?;
-        Ok(())
-    }
-
     pub(crate) fn has_entries(&self) -> bool {
         let inner = self.inner.lock().unwrap();
         !inner.entries.items.is_empty()
@@ -634,7 +628,7 @@ impl AppImpl {
     }
 
     pub async fn scrape_article(&mut self) -> Result<()> {
-        let link = &self
+        let link = self
             .current_entry_meta
             .as_ref()
             .and_then(|entry| entry.link.as_ref());
@@ -643,16 +637,17 @@ impl AppImpl {
             let scraper = ArticleScraper::new(None).await;
             if let Ok(url) = url::Url::parse(link.as_ref()) {
                 let client = self.http_client();
-                let article = scraper.parse(&url, false, &client, None).await?;
-                if let Some(content) = article.html {
-                    let line_length = if self.entry_column_width >= 5 {
-                        self.entry_column_width - 4
-                    } else {
-                        1
-                    };
-                    self.current_entry_text =
-                        html2text::from_read(content.as_bytes(), line_length as usize)?;
-                    self.entry_lines_len = self.current_entry_text.matches('\n').count();
+                if let Ok(article) = scraper.parse(&url, false, &client, None).await {
+                    if let Some(content) = article.html {
+                        let line_length = if self.entry_column_width >= 5 {
+                            self.entry_column_width - 4
+                        } else {
+                            1
+                        };
+                        self.current_entry_text =
+                            html2text::from_read(content.as_bytes(), line_length as usize).unwrap();
+                        self.entry_lines_len = self.current_entry_text.matches('\n').count();
+                    }
                 }
             }
         }

@@ -4,10 +4,9 @@ use crate::app::App;
 use crate::modes::Mode;
 use crate::ReadOptions;
 use anyhow::Result;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 pub(crate) enum Action {
-    Break,
     RefreshFeed(crate::rss::FeedId),
     RefreshFeeds(Vec<crate::rss::FeedId>),
     SubscribeToFeed(String),
@@ -16,108 +15,108 @@ pub(crate) enum Action {
 
 /// A loop to process `io::Action` messages.
 pub(crate) async fn io_loop(
-    app: App,
-    io_tx: UnboundedSender<Action>,
-    mut io_rx: UnboundedReceiver<Action>,
+    app: &App,
+    io_tx: &UnboundedSender<Action>,
     options: &ReadOptions,
+    event: Action,
 ) -> Result<()> {
     let manager = r2d2_sqlite::SqliteConnectionManager::file(&options.database_path);
     let connection_pool = r2d2::Pool::new(manager)?;
 
-    while let Some(event) = io_rx.recv().await {
-        match event {
-            Action::Break => break,
-            Action::RefreshFeed(feed_id) => {
-                let now = std::time::Instant::now();
+    match event {
+        Action::RefreshFeed(feed_id) => {
+            let now = std::time::Instant::now();
 
-                app.set_flash("Refreshing feed...".to_string());
-                app.force_redraw()?;
+            app.set_flash("Refreshing feed...".to_string());
+            app.force_redraw()?;
 
-                refresh_feeds(&app, &connection_pool, &[feed_id], |_app, fetch_result| {
-                    if let Err(e) = fetch_result {
-                        app.push_error_flash(e)
-                    }
-                })
-                .await?;
+            refresh_feeds(&app, &connection_pool, &[feed_id], |_app, fetch_result| {
+                if let Err(e) = fetch_result {
+                    app.push_error_flash(e)
+                }
+            })
+            .await?;
 
+            app.update_current_feed_and_entries()?;
+            let elapsed = now.elapsed();
+            app.set_flash(format!("Refreshed feed in {elapsed:?}"));
+            app.force_redraw()?;
+            clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
+        }
+        Action::RefreshFeeds(feed_ids) => {
+            let now = std::time::Instant::now();
+
+            app.set_flash("Refreshing all feeds...".to_string());
+            app.force_redraw()?;
+
+            let all_feeds_len = feed_ids.len();
+            let mut successfully_refreshed_len = 0usize;
+
+            refresh_feeds(
+                &app,
+                &connection_pool,
+                &feed_ids,
+                |app, fetch_result| match fetch_result {
+                    Ok(_) => successfully_refreshed_len += 1,
+                    Err(e) => app.push_error_flash(e),
+                },
+            )
+            .await?;
+
+            {
                 app.update_current_feed_and_entries()?;
+
                 let elapsed = now.elapsed();
-                app.set_flash(format!("Refreshed feed in {elapsed:?}"));
+                app.set_flash(format!(
+                    "Refreshed {successfully_refreshed_len}/{all_feeds_len} feeds in {elapsed:?}"
+                ));
                 app.force_redraw()?;
-                clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
             }
-            Action::RefreshFeeds(feed_ids) => {
-                let now = std::time::Instant::now();
 
-                app.set_flash("Refreshing all feeds...".to_string());
-                app.force_redraw()?;
+            clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
+        }
+        Action::SubscribeToFeed(feed_subscription_input) => {
+            let now = std::time::Instant::now();
 
-                let all_feeds_len = feed_ids.len();
-                let mut successfully_refreshed_len = 0usize;
+            app.set_flash("Subscribing to feed...".to_string());
+            app.force_redraw()?;
 
-                refresh_feeds(&app, &connection_pool, &feed_ids, |app, fetch_result| {
-                    match fetch_result {
-                        Ok(_) => successfully_refreshed_len += 1,
-                        Err(e) => app.push_error_flash(e),
+            let mut conn = connection_pool.get()?;
+            let r = crate::rss::subscribe_to_feed(
+                &app.http_client(),
+                &mut conn,
+                &feed_subscription_input,
+            )
+            .await;
+
+            if let Err(e) = r {
+                app.push_error_flash(e);
+                return Ok(());
+            }
+
+            match crate::rss::get_feeds(&conn) {
+                Ok(feeds) => {
+                    {
+                        app.reset_feed_subscription_input();
+                        app.set_feeds(feeds);
+                        app.select_feeds();
+                        app.update_current_feed_and_entries()?;
+
+                        let elapsed = now.elapsed();
+                        app.set_flash(format!("Subscribed in {elapsed:?}"));
+                        app.set_mode(Mode::Normal);
+                        app.force_redraw()?;
                     }
-                })
-                .await?;
 
-                {
-                    app.update_current_feed_and_entries()?;
-
-                    let elapsed = now.elapsed();
-                    app.set_flash(format!(
-                        "Refreshed {successfully_refreshed_len}/{all_feeds_len} feeds in {elapsed:?}"
-                    ));
-                    app.force_redraw()?;
+                    clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
                 }
-
-                clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
-            }
-            Action::SubscribeToFeed(feed_subscription_input) => {
-                let now = std::time::Instant::now();
-
-                app.set_flash("Subscribing to feed...".to_string());
-                app.force_redraw()?;
-
-                let mut conn = connection_pool.get()?;
-                let r = crate::rss::subscribe_to_feed(
-                    &app.http_client(),
-                    &mut conn,
-                    &feed_subscription_input,
-                )
-                .await;
-
-                if let Err(e) = r {
+                Err(e) => {
                     app.push_error_flash(e);
-                    continue;
-                }
-
-                match crate::rss::get_feeds(&conn) {
-                    Ok(feeds) => {
-                        {
-                            app.reset_feed_subscription_input();
-                            app.set_feeds(feeds);
-                            app.select_feeds();
-                            app.update_current_feed_and_entries()?;
-
-                            let elapsed = now.elapsed();
-                            app.set_flash(format!("Subscribed in {elapsed:?}"));
-                            app.set_mode(Mode::Normal);
-                            app.force_redraw()?;
-                        }
-
-                        clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
-                    }
-                    Err(e) => {
-                        app.push_error_flash(e);
-                    }
                 }
             }
-            Action::ClearFlash => {
-                app.clear_flash();
-            }
+        }
+        Action::ClearFlash => {
+            app.clear_flash();
         }
     }
 

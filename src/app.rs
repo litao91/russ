@@ -5,7 +5,7 @@ use crate::util;
 use anyhow::Result;
 use article_scraper::ArticleScraper;
 use copypasta::{ClipboardContext, ClipboardProvider};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -77,7 +77,7 @@ impl App {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             let mut inner = inner.lock().await;
-            inner.scrape_article().await;
+            inner.scrape_article().await.unwrap();
         });
         Ok(())
     }
@@ -610,7 +610,9 @@ impl AppImpl {
 
             #[cfg(not(target_os = "linux"))]
             {
-                unreachable!("This should never happen. This code should only be reachable if the target OS is WSL.")
+                unreachable!(
+                    "This should never happen. This code should only be reachable if the target OS is WSL."
+                )
             }
         } else if let Some(current_link) = current_link {
             let mut ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!(e))?;

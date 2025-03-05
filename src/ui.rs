@@ -1,10 +1,10 @@
 //! How the UI is rendered, with the Ratatui library.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Span, Text};
 use ratatui::widgets::{Block, Borders, LineGauge, List, ListItem, Paragraph, Wrap};
-use ratatui::Frame;
 use std::rc::Rc;
 
 use crate::app::AppImpl;
@@ -17,7 +17,7 @@ pub fn predraw(f: &Frame) -> Rc<[Rect]> {
     Layout::default()
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
         .direction(Direction::Horizontal)
-        .split(f.size())
+        .split(f.area())
 }
 
 pub fn draw(f: &mut Frame, chunks: Rc<[Rect]>, app: &mut AppImpl) {
@@ -422,11 +422,7 @@ fn draw_entry(f: &mut Frame, area: Rect, app: &mut AppImpl) {
         let percent = ((furthest_visible_position as f32 / app.entry_lines_len as f32) * 100.0)
             .floor() as usize;
 
-        if percent <= 100 {
-            percent
-        } else {
-            100
-        }
+        if percent <= 100 { percent } else { 100 }
     } else {
         0
     };
@@ -435,7 +431,7 @@ fn draw_entry(f: &mut Frame, area: Rect, app: &mut AppImpl) {
     let ratio = percent as f64 / 100.0;
     let gauge = LineGauge::default()
         .block(Block::default().borders(Borders::NONE))
-        .gauge_style(Style::default().fg(PINK))
+        .filled_style(Style::default().fg(PINK))
         .ratio(ratio)
         .label(label);
 

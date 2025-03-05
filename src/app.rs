@@ -165,6 +165,11 @@ impl App {
         Ok(())
     }
 
+    pub(crate) async fn break_io_thread(&self) -> Result<()> {
+        let inner = self.inner.lock().await;
+        inner.io_tx.send(crate::io::Action::Break)?;
+        Ok(())
+    }
     pub(crate) async fn has_entries(&self) -> bool {
         let inner = self.inner.lock().await;
         !inner.entries.items.is_empty()

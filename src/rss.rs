@@ -2,7 +2,7 @@
 //! of RSS/Atom feeds in Russ' SQLite database.
 
 use crate::modes::ReadMode;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use atom_syndication as atom;
 use chrono::prelude::{DateTime, Utc};
 use html_escape::decode_html_entities_to_string;
@@ -853,7 +853,7 @@ mod tests {
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap();
-        let feed_and_entries = fetch_feed(&http_client, ZCT, None).await.unwrap();
+        let feed_and_entries = fetch_feed(http_client, ZCT, None).await.unwrap();
         if let FeedResponse::CacheMiss(feed_and_entries) = feed_and_entries {
             assert!(!feed_and_entries.entries.is_empty())
         } else {
@@ -869,7 +869,7 @@ mod tests {
             .unwrap();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
-        subscribe_to_feed(&http_client, &mut conn, ZCT)
+        subscribe_to_feed(http_client, &mut conn, ZCT)
             .await
             .unwrap();
         let count: i64 = conn
@@ -887,14 +887,12 @@ mod tests {
             .unwrap();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_db(&mut conn).unwrap();
-        subscribe_to_feed(&http_client, &mut conn, ZCT)
+        subscribe_to_feed(http_client.clone(), &mut conn, ZCT)
             .await
             .unwrap();
         let feed_id = 1.into();
         let old_entries = get_entries_metas(&conn, &ReadMode::ShowUnread, feed_id).unwrap();
-        refresh_feed(&http_client, &mut conn, feed_id)
-            .await
-            .unwrap();
+        refresh_feed(http_client, &mut conn, feed_id).await.unwrap();
         let e = get_entry_meta(&conn, 1.into()).unwrap();
         e.mark_as_read(&conn).unwrap();
         let new_entries = get_entries_metas(&conn, &ReadMode::ShowUnread, feed_id).unwrap();

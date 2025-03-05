@@ -28,7 +28,7 @@ pub(crate) async fn import(options: ImportOptions) -> Result<()> {
     for feed_url in feed_urls {
         eprintln!(">>>>>>>>>>");
         eprintln!("{}: starting import", feed_url);
-        match crate::rss::subscribe_to_feed(&http_client, &mut conn, &feed_url).await {
+        match crate::rss::subscribe_to_feed(http_client.clone(), &mut conn, &feed_url).await {
             Ok(_feed_id) => {
                 eprintln!("{feed_url}: OK");
                 successful_imports += 1;

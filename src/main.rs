@@ -8,11 +8,11 @@ use crossterm::event::{self, KeyEvent, KeyEventKind};
 use crossterm::event::{Event as CEvent, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::time;
@@ -192,13 +192,19 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
     let tick_rate = time::Duration::from_millis(options.tick_rate);
     let options_clone = options.clone();
 
-    let (io_tx, mut io_rx) = mpsc::unbounded_channel();
+    let (io_tx, io_rx) = mpsc::unbounded_channel();
 
     let io_tx_clone = io_tx.clone();
 
     let mut app = App::new(options, event_tx_clone, io_tx)?;
 
+    let cloned_app = app.clone();
     terminal.clear()?;
+    let io_loop_hdl = tokio::spawn(async move {
+        io::io_loop(cloned_app, io_tx_clone, io_rx, &options_clone)
+            .await
+            .unwrap();
+    });
 
     // this is basically "the Elm Architecture".
     //
@@ -221,15 +227,13 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
                 }
 
                 if app.should_quit().await {
+                    app.break_io_thread().await?;
                     disable_raw_mode()?;
                     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                     terminal.show_cursor()?;
                     break;
                 }
             },
-            Some(event) = io_rx.recv() => {
-            io::io_loop(&app, &io_tx_clone, &options_clone, event).await?;
-            }
             Ok(ready) = tokio::task::spawn_blocking(|| crossterm::event::poll(time::Duration::from_millis(100))) => {
                 match ready {
                     Ok(true) => {
@@ -249,6 +253,7 @@ async fn run_reader(options: ReadOptions) -> Result<()> {
 
         }
     }
+    io_loop_hdl.await.unwrap();
 
     Ok(())
 }

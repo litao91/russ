@@ -4,126 +4,130 @@ use crate::ReadOptions;
 use crate::app::App;
 use crate::modes::Mode;
 use anyhow::Result;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub(crate) enum Action {
     RefreshFeed(crate::rss::FeedId),
     RefreshFeeds(Vec<crate::rss::FeedId>),
     SubscribeToFeed(String),
     ClearFlash,
+    Break,
 }
 
 /// A loop to process `io::Action` messages.
 pub(crate) async fn io_loop(
-    app: &App,
-    io_tx: &UnboundedSender<Action>,
+    app: App,
+    io_tx: UnboundedSender<Action>,
+    mut io_rx: UnboundedReceiver<Action>,
     options: &ReadOptions,
-    event: Action,
 ) -> Result<()> {
     let manager = r2d2_sqlite::SqliteConnectionManager::file(&options.database_path);
     let connection_pool = r2d2::Pool::new(manager)?;
 
-    match event {
-        Action::RefreshFeed(feed_id) => {
-            let now = std::time::Instant::now();
+    while let Some(event) = io_rx.recv().await {
+        match event {
+            Action::Break => break,
+            Action::RefreshFeed(feed_id) => {
+                let now = std::time::Instant::now();
 
-            app.set_flash("Refreshing feed...".to_string()).await;
-            app.force_redraw().await?;
+                app.set_flash("Refreshing feed...".to_string()).await;
+                app.force_redraw().await?;
 
-            refresh_feeds(
-                &app,
-                &connection_pool,
-                &[feed_id],
-                async |_app, fetch_result| {
-                    if let Err(e) = fetch_result {
-                        app.push_error_flash(e).await;
-                    }
-                },
-            )
-            .await?;
+                refresh_feeds(
+                    &app,
+                    &connection_pool,
+                    &[feed_id],
+                    async |_app, fetch_result| {
+                        if let Err(e) = fetch_result {
+                            app.push_error_flash(e).await;
+                        }
+                    },
+                )
+                .await?;
 
-            app.update_current_feed_and_entries().await?;
-            let elapsed = now.elapsed();
-            app.set_flash(format!("Refreshed feed in {elapsed:?}"))
-                .await;
-            app.force_redraw().await?;
-            clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
-        }
-        Action::RefreshFeeds(feed_ids) => {
-            let now = std::time::Instant::now();
-
-            app.set_flash("Refreshing all feeds...".to_string()).await;
-            app.force_redraw().await?;
-
-            let all_feeds_len = feed_ids.len();
-            let mut successfully_refreshed_len = 0usize;
-
-            refresh_feeds(
-                &app,
-                &connection_pool,
-                &feed_ids,
-                async |app, fetch_result| match fetch_result {
-                    Ok(_) => successfully_refreshed_len += 1,
-                    Err(e) => app.push_error_flash(e).await,
-                },
-            )
-            .await?;
-
-            {
                 app.update_current_feed_and_entries().await?;
-
                 let elapsed = now.elapsed();
-                app.set_flash(format!(
+                app.set_flash(format!("Refreshed feed in {elapsed:?}"))
+                    .await;
+                app.force_redraw().await?;
+                clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
+            }
+            Action::RefreshFeeds(feed_ids) => {
+                let now = std::time::Instant::now();
+
+                app.set_flash("Refreshing all feeds...".to_string()).await;
+                app.force_redraw().await?;
+
+                let all_feeds_len = feed_ids.len();
+                let mut successfully_refreshed_len = 0usize;
+
+                refresh_feeds(
+                    &app,
+                    &connection_pool,
+                    &feed_ids,
+                    async |app, fetch_result| match fetch_result {
+                        Ok(_) => successfully_refreshed_len += 1,
+                        Err(e) => app.push_error_flash(e).await,
+                    },
+                )
+                .await?;
+
+                {
+                    app.update_current_feed_and_entries().await?;
+
+                    let elapsed = now.elapsed();
+                    app.set_flash(format!(
                     "Refreshed {successfully_refreshed_len}/{all_feeds_len} feeds in {elapsed:?}"
                 ))
                 .await;
+                    app.force_redraw().await?;
+                }
+
+                clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
+            }
+            Action::SubscribeToFeed(feed_subscription_input) => {
+                let now = std::time::Instant::now();
+
+                app.set_flash("Subscribing to feed...".to_string()).await;
                 app.force_redraw().await?;
-            }
 
-            clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
-        }
-        Action::SubscribeToFeed(feed_subscription_input) => {
-            let now = std::time::Instant::now();
+                let mut conn = connection_pool.get()?;
+                let r = crate::rss::subscribe_to_feed(
+                    &app.http_client().await,
+                    &mut conn,
+                    &feed_subscription_input,
+                )
+                .await;
 
-            app.set_flash("Subscribing to feed...".to_string()).await;
-            app.force_redraw().await?;
-
-            let mut conn = connection_pool.get()?;
-            let r = crate::rss::subscribe_to_feed(
-                &app.http_client().await,
-                &mut conn,
-                &feed_subscription_input,
-            )
-            .await;
-
-            if let Err(e) = r {
-                app.push_error_flash(e).await;
-                return Ok(());
-            }
-
-            match crate::rss::get_feeds(&conn) {
-                Ok(feeds) => {
-                    {
-                        app.reset_feed_subscription_input().await;
-                        app.set_feeds(feeds).await;
-                        app.select_feeds().await;
-                        app.update_current_feed_and_entries().await?;
-
-                        let elapsed = now.elapsed();
-                        app.set_flash(format!("Subscribed in {elapsed:?}")).await;
-                        app.set_mode(Mode::Normal).await;
-                        app.force_redraw().await?;
-                    }
-
-                    clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
-                }
-                Err(e) => {
+                if let Err(e) = r {
                     app.push_error_flash(e).await;
+                    return Ok(());
+                }
+
+                match crate::rss::get_feeds(&conn) {
+                    Ok(feeds) => {
+                        {
+                            app.reset_feed_subscription_input().await;
+                            app.set_feeds(feeds).await;
+                            app.select_feeds().await;
+                            app.update_current_feed_and_entries().await?;
+
+                            let elapsed = now.elapsed();
+                            app.set_flash(format!("Subscribed in {elapsed:?}")).await;
+                            app.set_mode(Mode::Normal).await;
+                            app.force_redraw().await?;
+                        }
+
+                        clear_flash_after(io_tx.clone(), options.flash_display_duration_seconds);
+                    }
+                    Err(e) => {
+                        app.push_error_flash(e).await;
+                    }
                 }
             }
-        }
-        Action::ClearFlash => {
-            app.clear_flash().await;
+            Action::ClearFlash => {
+                app.clear_flash().await;
+            }
         }
     }
 
@@ -141,7 +145,7 @@ async fn refresh_feeds<F>(
     mut refresh_result_handler: F,
 ) -> Result<()>
 where
-    F: AsyncFnMut(&App, anyhow::Result<()>),
+    F: AsyncFnMut(App, anyhow::Result<()>),
 {
     let chunks = chunkify_for_threads(feed_ids, num_cpus::get() * 2);
 
@@ -169,7 +173,7 @@ where
             .await
             .expect("unable to join worker thread to io thread");
         for chunk_result in chunk_results? {
-            refresh_result_handler(app, chunk_result).await;
+            refresh_result_handler(app.clone(), chunk_result).await;
         }
     }
 

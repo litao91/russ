@@ -4,6 +4,7 @@ use crate::ReadOptions;
 use crate::app::App;
 use crate::modes::Mode;
 use anyhow::Result;
+use async_fn_traits::AsyncFnMut2;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub(crate) enum Action {
@@ -59,14 +60,13 @@ pub(crate) async fn io_loop(
                 app.force_redraw().await?;
 
                 let all_feeds_len = feed_ids.len();
-                let mut successfully_refreshed_len = 0usize;
 
                 refresh_feeds(
                     app.clone(),
                     &connection_pool,
                     &feed_ids,
                     async |_app: App, fetch_result| match fetch_result {
-                        Ok(_) => successfully_refreshed_len += 1,
+                        Ok(_) => {}
                         Err(e) => _app.push_error_flash(e).await,
                     },
                 )
@@ -76,10 +76,8 @@ pub(crate) async fn io_loop(
                     app.update_current_feed_and_entries().await?;
 
                     let elapsed = now.elapsed();
-                    app.set_flash(format!(
-                    "Refreshed {successfully_refreshed_len}/{all_feeds_len} feeds in {elapsed:?}"
-                ))
-                .await;
+                    app.set_flash(format!("Refreshed feeds in {elapsed:?}"))
+                        .await;
                     app.force_redraw().await?;
                 }
 
@@ -146,6 +144,8 @@ async fn refresh_feeds<F>(
 ) -> Result<()>
 where
     F: async_fn_traits::AsyncFnMut2<App, anyhow::Result<()>>,
+    // F: FnMut(App, anyhow::Result<()>) -> Fut,
+    // Fut: Future<Output = ()>,
 {
     let chunks = chunkify_for_threads(feed_ids, num_cpus::get() * 2);
 

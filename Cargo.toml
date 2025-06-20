@@ -37,6 +37,8 @@ url = "2.5.4"
 termimad = "0.31.2"
 http = "1.2.0"
 async_fn_traits = "0.1.1"
+html2md = "0.2.15"
+tui-markdown = "0.3.3"
 
 [profile.release]
 codegen-units = 1

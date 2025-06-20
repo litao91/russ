@@ -653,8 +653,8 @@ impl AppImpl {
                         } else {
                             1
                         };
-                        self.current_entry_text =
-                            html2text::from_read(content.as_bytes(), line_length as usize).unwrap();
+                        self.current_entry_text = html2md::parse_html(&content);
+                        // html2text::from_read(content.as_bytes(), line_length as usize).unwrap();
                         self.entry_lines_len = self.current_entry_text.matches('\n').count();
                     }
                 }

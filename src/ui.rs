@@ -401,7 +401,7 @@ fn draw_entry(f: &mut Frame, area: Rect, app: &mut AppImpl) {
             .fg(Color::Cyan),
     ));
 
-    let paragraph = Paragraph::new(app.current_entry_text.as_str())
+    let paragraph = Paragraph::new(tui_markdown::from_str(app.current_entry_text.as_str()))
         .block(block)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
